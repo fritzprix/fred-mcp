@@ -1,5 +1,5 @@
 [project]
-name = "fred-mcp"
+name = "fred-data-mcp"
 version = "0.1.0"
 description = "MCP server for Federal Reserve Economic Data (FRED)"
 readme = "README.md"
@@ -27,7 +27,7 @@ Issues = "https://github.com/example/fred-mcp-server/issues"
 
 
 [project.scripts]
-fred-mcp = "fred_mcp.server:main"
+fred-data-mcp = "fred_mcp.server:main"
 
 [build-system]
 requires = ["hatchling"]

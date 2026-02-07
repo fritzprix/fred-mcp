@@ -18,16 +18,16 @@ Set the `FRED_API_KEY` environment variable to your FRED API key.
 
 Run with `uvx` (if published):
 ```bash
-uvx fred-mcp
+uvx fred-data-mcp
 ```
 
 ### Installation from PyPI
 
 Once published, you can install and run directly:
 ```bash
-pip install fred-mcp
+pip install fred-data-mcp
 # or
-uvx fred-mcp
+uvx fred-data-mcp
 ```
 
 
@@ -43,7 +43,7 @@ If you have published the package to PyPI, you can key off the package name dire
     "fred": {
       "command": "uvx",
       "args": [
-        "fred-mcp"
+        "fred-data-mcp"
       ],
       "env": {
         "FRED_API_KEY": "your_api_key_here"
@@ -63,7 +63,7 @@ If you are running from the source code repository:
       "args": [
         "--from",
         "/absolute/path/to/fred-mcp",
-        "fred-mcp"
+        "fred-data-mcp"
       ],
       "env": {
         "FRED_API_KEY": "your_api_key_here"
