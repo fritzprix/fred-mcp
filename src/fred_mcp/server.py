@@ -28,30 +28,48 @@ def format_series_search_results(df: pd.DataFrame, limit: int, offset: int) -> s
     markdown += df_page.to_markdown(index=False)
     return markdown
 
-def format_series_data(series: pd.Series, info: pd.Series = None) -> str:
-    """Format series data as Markdown."""
-    markdown = ""
-    if info is not None:
-        title = info.get('title', 'Unknown Series')
-        units = info.get('units', '')
-        markdown += f"## {title} ({units})\n\n"
+def save_to_file(data: pd.DataFrame, file_path: str, series_id: Optional[str] = None) -> str:
+    """Helper to save DataFrame to JSON and return a confirmation message."""
+    # Create directory if it doesn't exist
+    os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
     
-    markdown += series.to_markdown()
-    return markdown
+    # Prepare for JSON export
+    df = data.copy()
+    if isinstance(df, pd.Series):
+        df = df.to_frame(name="value")
+    
+    # Handle dates if they are in the index
+    if isinstance(df.index, pd.DatetimeIndex):
+        df.index.name = df.index.name or "date"
+        df.reset_index(inplace=True)
+        # Convert timestamp to string for JSON serialization
+        for col in df.select_dtypes(include=['datetime64']).columns:
+            df[col] = df[col].dt.strftime('%Y-%m-%d')
+    
+    with open(file_path, 'w') as f:
+        json.dump(df.to_dict(orient='records'), f, indent=2)
+        
+    id_str = f" for `{series_id}`" if series_id else ""
+    return f"✅ Data{id_str} saved to `{file_path}` ({len(df)} records)\n"
 
 @mcp.tool()
-def search_series(query: str, limit: int = 10, offset: int = 0) -> str:
+def search_series(query: str, limit: int = 10, offset: int = 0, file_path: Optional[str] = None) -> str:
     """
     Search for economic data series by text query.
     
     Args:
         query: The search text (e.g., "gdp", "unemployment").
-        limit: Maximum number of results to return (default: 10).
+        limit: Maximum number of results to return in preview (default: 10).
         offset: Number of results to skip (default: 0).
+        file_path: Optional absolute path to save the full search results as JSON.
     """
     try:
         fred = get_fred()
         df = fred.search(query)
+        
+        if file_path:
+            return save_to_file(df, file_path, query)
+            
         return format_series_search_results(df, limit, offset)
     except Exception as e:
         return f"Error searching series: {str(e)}"
@@ -84,7 +102,7 @@ def get_series_data(series_id: str, limit: int = 1000, offset: int = 0, file_pat
         limit: Max data points to return in the markdown preview (default: 1000).
         offset: Data points to skip (default: 0).
         file_path: Optional absolute path to save the full data as JSON. 
-                   If provided, the full dataset (ignoring limit/offset) is saved.
+                   If provided, the full dataset (ignoring limit/offset) is saved and response is minimized.
     """
     try:
         fred = get_fred()
@@ -94,24 +112,9 @@ def get_series_data(series_id: str, limit: int = 1000, offset: int = 0, file_pat
         if data is None or data.empty:
             return f"No data found for series {series_id}"
             
-        result_msg = ""
-        
         # Handle file download if requested
         if file_path:
-            # Create directory if it doesn't exist
-            os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
-            
-            # Convert series to DataFrame for JSON export (date index + value)
-            df = data.to_frame(name="value")
-            df.index.name = "date"
-            df.reset_index(inplace=True)
-            # Convert timestamp to string for JSON serialization
-            df['date'] = df['date'].dt.strftime('%Y-%m-%d')
-            
-            with open(file_path, 'w') as f:
-                json.dump(df.to_dict(orient='records'), f, indent=2)
-                
-            result_msg += f"✅ Data for `{series_id}` saved to `{file_path}`\n\n"
+            return save_to_file(data, file_path, series_id)
 
         # Prepare markdown preview
         # Limit/Offset applies to the preview
@@ -127,7 +130,7 @@ def get_series_data(series_id: str, limit: int = 1000, offset: int = 0, file_pat
         except:
             header = f"## {series_id}"
 
-        result_msg += f"{header}\n"
+        result_msg = f"{header}\n"
         result_msg += f"**Showing {len(data_page)} of {total_points} data points**\n\n"
         result_msg += data_page.to_markdown()
         
@@ -180,51 +183,86 @@ def get_category_children(category_id: int) -> str:
 # Let's stick to safe bets: `search_by_category` -> `get_category_series`.
 
 @mcp.tool()
-def get_category_series(category_id: int, limit: int = 1000, offset: int = 0) -> str:
+def get_category_series(category_id: int, limit: int = 1000, offset: int = 0, file_path: Optional[str] = None) -> str:
     """
     Get series in a specific category.
     
     Args:
         category_id: The category ID.
-        limit: Max results.
-        offset: Offset.
+        limit: Max results in preview.
+        offset: Offset for preview.
+        file_path: Optional absolute path to save the full list as JSON.
     """
     try:
         fred = get_fred()
-        # search_by_category(category_id, limit=None, order_by=None, sort_order=None, filter_variable=None, filter_value=None, tag_names=None, exclude_tag_names=None)
-        # It returns a DataFrame.
         df = fred.search_by_category(category_id, limit=limit, order_by='popularity', sort_order='desc')
+        
+        if file_path:
+            return save_to_file(df, file_path, f"category_{category_id}")
+            
         return format_series_search_results(df, limit, offset)
     except Exception as e:
         return f"Error getting category series: {str(e)}"
 
 @mcp.tool()
-def get_releases(limit: int = 1000, offset: int = 0) -> str:
-    """Get all releases of economic data."""
+def get_releases(limit: int = 1000, offset: int = 0, file_path: Optional[str] = None) -> str:
+    """
+    Get all releases of economic data.
+    
+    Args:
+        limit: Max results in preview.
+        offset: Offset for preview.
+        file_path: Optional absolute path to save the full list as JSON.
+    """
     try:
         fred = get_fred()
         df = fred.get_releases(limit=limit, offset=offset)
+        
+        if file_path:
+            return save_to_file(df, file_path, "releases")
+            
         return format_series_search_results(df, limit, offset)
     except Exception as e:
         return f"Error getting releases: {str(e)}"
 
 @mcp.tool()
-def get_release_series(release_id: int, limit: int = 1000, offset: int = 0) -> str:
-    """Get series in a specific release."""
+def get_release_series(release_id: int, limit: int = 1000, offset: int = 0, file_path: Optional[str] = None) -> str:
+    """
+    Get series in a specific release.
+    
+    Args:
+        release_id: The release ID.
+        limit: Max results in preview.
+        offset: Offset for preview.
+        file_path: Optional absolute path to save the full list as JSON.
+    """
     try:
         fred = get_fred()
         df = fred.get_release_series(release_id, limit=limit, offset=offset)
+        
+        if file_path:
+            return save_to_file(df, file_path, f"release_{release_id}")
+            
         return format_series_search_results(df, limit, offset)
     except Exception as e:
         return f"Error getting release series: {str(e)}"
 
 # Sources and Tags
 @mcp.tool()
-def get_sources() -> str:
-    """Get all sources of economic data."""
+def get_sources(file_path: Optional[str] = None) -> str:
+    """
+    Get all sources of economic data.
+    
+    Args:
+        file_path: Optional absolute path to save the sources list as JSON.
+    """
     try:
         fred = get_fred()
         df = fred.get_sources()
+        
+        if file_path:
+            return save_to_file(df, file_path, "sources")
+            
         markdown = f"**Found {len(df)} sources:**\n\n"
         markdown += df.to_markdown(index=False)
         return markdown
