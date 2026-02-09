@@ -91,7 +91,7 @@ def search_series(query: str, limit: int = 10, offset: int = 0, file_path: Optio
         markdown = format_series_search_results(df, limit, offset)
         return CallToolResult(
             content=[TextContent(type="text", text=markdown)],
-            structuredContent=records
+            structuredContent={"results": records}
         )
     except Exception as e:
         error_msg = f"Error searching series: {str(e)}"
@@ -187,7 +187,7 @@ def get_series_data(series_id: str, limit: int = 1000, offset: int = 0, file_pat
         
         return CallToolResult(
             content=[TextContent(type="text", text=result_msg)],
-            structuredContent=records[offset : offset + limit]
+            structuredContent={"data": records[offset : offset + limit]}
         )
 
     except Exception as e:
@@ -278,7 +278,7 @@ def get_category_series(category_id: int, limit: int = 1000, offset: int = 0, fi
         markdown = format_series_search_results(df, limit, offset)
         return CallToolResult(
             content=[TextContent(type="text", text=markdown)],
-            structuredContent=records
+            structuredContent={"results": records}
         )
     except Exception as e:
         error_msg = f"Error getting category series: {str(e)}"
@@ -314,7 +314,7 @@ def get_releases(limit: int = 1000, offset: int = 0, file_path: Optional[str] = 
         markdown = format_series_search_results(df, limit, offset)
         return CallToolResult(
             content=[TextContent(type="text", text=markdown)],
-            structuredContent=records
+            structuredContent={"results": records}
         )
     except Exception as e:
         error_msg = f"Error getting releases: {str(e)}"
@@ -351,7 +351,7 @@ def get_release_series(release_id: int, limit: int = 1000, offset: int = 0, file
         markdown = format_series_search_results(df, limit, offset)
         return CallToolResult(
             content=[TextContent(type="text", text=markdown)],
-            structuredContent=records
+            structuredContent={"results": records}
         )
     except Exception as e:
         error_msg = f"Error getting release series: {str(e)}"
@@ -387,7 +387,7 @@ def get_sources(file_path: Optional[str] = None) -> CallToolResult:
         markdown += df.to_markdown(index=False)
         return CallToolResult(
             content=[TextContent(type="text", text=markdown)],
-            structuredContent=records
+            structuredContent={"results": records}
         )
     except Exception as e:
         error_msg = f"Error getting sources: {str(e)}"
