@@ -1,9 +1,10 @@
 import os
 import json
 import pandas as pd
-from typing import Optional
+from typing import Optional, Union, Any, Dict, List
 from fredapi import Fred
 from mcp.server.fastmcp import FastMCP
+from mcp.types import CallToolResult, TextContent
 
 # Initialize FastMCP
 mcp = FastMCP("fred-mcp-server")
@@ -14,6 +15,28 @@ def get_fred() -> Fred:
     if not api_key:
         raise ValueError("FRED_API_KEY environment variable not set. Please set it to use this server.")
     return Fred(api_key=api_key)
+
+def df_to_records(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    """Helper to convert DataFrame to JSON-serializable records."""
+    if df is None or df.empty:
+        return []
+    
+    # Prepare for JSON export
+    temp_df = df.copy()
+    if isinstance(temp_df, pd.Series):
+        temp_df = temp_df.to_frame(name="value")
+    
+    # Handle dates if they are in the index
+    if isinstance(temp_df.index, pd.DatetimeIndex):
+        temp_df.index.name = temp_df.index.name or "date"
+        temp_df.reset_index(inplace=True)
+        # Convert timestamp to string for JSON serialization
+        for col in temp_df.select_dtypes(include=['datetime64']).columns:
+            temp_df[col] = temp_df[col].dt.strftime('%Y-%m-%d')
+    
+    # Convert other objects that might not be serializable
+    # (e.g., float('nan') which common JSON encoders handle, but we can be explicit)
+    return temp_df.to_dict(orient='records')
 
 def format_series_search_results(df: pd.DataFrame, limit: int, offset: int) -> str:
     """Format search results as Markdown table."""
@@ -33,27 +56,16 @@ def save_to_file(data: pd.DataFrame, file_path: str, series_id: Optional[str] = 
     # Create directory if it doesn't exist
     os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
     
-    # Prepare for JSON export
-    df = data.copy()
-    if isinstance(df, pd.Series):
-        df = df.to_frame(name="value")
-    
-    # Handle dates if they are in the index
-    if isinstance(df.index, pd.DatetimeIndex):
-        df.index.name = df.index.name or "date"
-        df.reset_index(inplace=True)
-        # Convert timestamp to string for JSON serialization
-        for col in df.select_dtypes(include=['datetime64']).columns:
-            df[col] = df[col].dt.strftime('%Y-%m-%d')
+    records = df_to_records(data)
     
     with open(file_path, 'w') as f:
-        json.dump(df.to_dict(orient='records'), f, indent=2)
+        json.dump(records, f, indent=2)
         
     id_str = f" for `{series_id}`" if series_id else ""
-    return f"✅ Data{id_str} saved to `{file_path}` ({len(df)} records)\n"
+    return f"✅ Data{id_str} saved to `{file_path}` ({len(records)} records)\n"
 
 @mcp.tool()
-def search_series(query: str, limit: int = 10, offset: int = 0, file_path: Optional[str] = None) -> str:
+def search_series(query: str, limit: int = 10, offset: int = 0, file_path: Optional[str] = None) -> CallToolResult:
     """
     Search for economic data series by text query.
     
@@ -67,15 +79,30 @@ def search_series(query: str, limit: int = 10, offset: int = 0, file_path: Optio
         fred = get_fred()
         df = fred.search(query)
         
+        records = df_to_records(df)
+        
         if file_path:
-            return save_to_file(df, file_path, query)
+            msg = save_to_file(df, file_path, query)
+            return CallToolResult(
+                content=[TextContent(type="text", text=msg)],
+                structuredContent={"message": msg, "file_path": file_path, "count": len(records)}
+            )
             
-        return format_series_search_results(df, limit, offset)
+        markdown = format_series_search_results(df, limit, offset)
+        return CallToolResult(
+            content=[TextContent(type="text", text=markdown)],
+            structuredContent=records
+        )
     except Exception as e:
-        return f"Error searching series: {str(e)}"
+        error_msg = f"Error searching series: {str(e)}"
+        return CallToolResult(
+            content=[TextContent(type="text", text=error_msg)],
+            isError=True,
+            structuredContent={"error": str(e)}
+        )
 
 @mcp.tool()
-def get_series_info(series_id: str) -> str:
+def get_series_info(series_id: str) -> CallToolResult:
     """
     Get metadata for a specific data series.
     
@@ -86,14 +113,28 @@ def get_series_info(series_id: str) -> str:
         fred = get_fred()
         info = fred.get_series_info(series_id)
         if info is None or info.empty:
-            return f"No info found for series {series_id}"
+            msg = f"No info found for series {series_id}"
+            return CallToolResult(
+                content=[TextContent(type="text", text=msg)],
+                structuredContent={"error": msg}
+            )
         
-        return f"## Series Metadata: {series_id}\n\n{info.to_markdown()}"
+        records = df_to_records(info)
+        markdown = f"## Series Metadata: {series_id}\n\n{info.to_markdown()}"
+        return CallToolResult(
+            content=[TextContent(type="text", text=markdown)],
+            structuredContent=records[0] if records else {}
+        )
     except Exception as e:
-        return f"Error getting series info: {str(e)}"
+        error_msg = f"Error getting series info: {str(e)}"
+        return CallToolResult(
+            content=[TextContent(type="text", text=error_msg)],
+            isError=True,
+            structuredContent={"error": str(e)}
+        )
 
 @mcp.tool()
-def get_series_data(series_id: str, limit: int = 1000, offset: int = 0, file_path: Optional[str] = None) -> str:
+def get_series_data(series_id: str, limit: int = 1000, offset: int = 0, file_path: Optional[str] = None) -> CallToolResult:
     """
     Get data points for a specific series.
     
@@ -110,11 +151,21 @@ def get_series_data(series_id: str, limit: int = 1000, offset: int = 0, file_pat
         data = fred.get_series(series_id)
         
         if data is None or data.empty:
-            return f"No data found for series {series_id}"
+            msg = f"No data found for series {series_id}"
+            return CallToolResult(
+                content=[TextContent(type="text", text=msg)],
+                structuredContent={"error": msg}
+            )
             
+        records = df_to_records(data)
+
         # Handle file download if requested
         if file_path:
-            return save_to_file(data, file_path, series_id)
+            msg = save_to_file(data, file_path, series_id)
+            return CallToolResult(
+                content=[TextContent(type="text", text=msg)],
+                structuredContent={"message": msg, "file_path": file_path, "count": len(records)}
+            )
 
         # Prepare markdown preview
         # Limit/Offset applies to the preview
@@ -134,15 +185,23 @@ def get_series_data(series_id: str, limit: int = 1000, offset: int = 0, file_pat
         result_msg += f"**Showing {len(data_page)} of {total_points} data points**\n\n"
         result_msg += data_page.to_markdown()
         
-        return result_msg
+        return CallToolResult(
+            content=[TextContent(type="text", text=result_msg)],
+            structuredContent=records[offset : offset + limit]
+        )
 
     except Exception as e:
-        return f"Error getting series data: {str(e)}"
+        error_msg = f"Error getting series data: {str(e)}"
+        return CallToolResult(
+            content=[TextContent(type="text", text=error_msg)],
+            isError=True,
+            structuredContent={"error": str(e)}
+        )
 
 # --- Category Tools ---
 
 @mcp.tool()
-def get_category_details(category_id: int) -> str:
+def get_category_details(category_id: int) -> CallToolResult:
     """
     Get details for a specific category (if supported).
     
@@ -150,14 +209,20 @@ def get_category_details(category_id: int) -> str:
         category_id: The ID of the category (e.g., 125).
     """
     try:
-        # Note: fredapi may not have a direct method for this in all versions.
-        # We'll return a message directing to use get_category_series.
-        return f"To explore category {category_id}, please use `get_category_series` or `get_category_children`."
+        msg = f"To explore category {category_id}, please use `get_category_series` or `get_category_children`."
+        return CallToolResult(
+            content=[TextContent(type="text", text=msg)],
+            structuredContent={"message": msg, "category_id": category_id, "status": "not_implemented"}
+        )
     except Exception as e:
-        return f"Error: {str(e)}"
+        return CallToolResult(
+            content=[TextContent(type="text", text=f"Error: {str(e)}")],
+            isError=True,
+            structuredContent={"error": str(e)}
+        )
 
 @mcp.tool()
-def get_category_children(category_id: int) -> str:
+def get_category_children(category_id: int) -> CallToolResult:
     """
     Get child categories for a specific category.
     
@@ -165,13 +230,17 @@ def get_category_children(category_id: int) -> str:
         category_id: The parent category ID.
     """
     try:
-        # Attempt to use undocumented or common method if available, 
-        # or else guide user. 
-        # For now, we'll return a placeholder as fredapi support is spotty for this specific call 
-        # without raw API access.
-        return "Tool `get_category_children` is not currently available via this wrapper. Please use `get_category_series`."
+        msg = "Tool `get_category_children` is not currently available via this wrapper. Please use `get_category_series`."
+        return CallToolResult(
+            content=[TextContent(type="text", text=msg)],
+            structuredContent={"message": msg, "category_id": category_id, "status": "not_implemented"}
+        )
     except Exception as e:
-        return f"Error: {str(e)}"
+        return CallToolResult(
+            content=[TextContent(type="text", text=f"Error: {str(e)}")],
+            isError=True,
+            structuredContent={"error": str(e)}
+        )
 
 
 # Re-implementing correctly based on `fredapi` capabilities (it's often just a thin wrapper).
@@ -183,7 +252,7 @@ def get_category_children(category_id: int) -> str:
 # Let's stick to safe bets: `search_by_category` -> `get_category_series`.
 
 @mcp.tool()
-def get_category_series(category_id: int, limit: int = 1000, offset: int = 0, file_path: Optional[str] = None) -> str:
+def get_category_series(category_id: int, limit: int = 1000, offset: int = 0, file_path: Optional[str] = None) -> CallToolResult:
     """
     Get series in a specific category.
     
@@ -197,15 +266,30 @@ def get_category_series(category_id: int, limit: int = 1000, offset: int = 0, fi
         fred = get_fred()
         df = fred.search_by_category(category_id, limit=limit, order_by='popularity', sort_order='desc')
         
+        records = df_to_records(df)
+
         if file_path:
-            return save_to_file(df, file_path, f"category_{category_id}")
+            msg = save_to_file(df, file_path, f"category_{category_id}")
+            return CallToolResult(
+                content=[TextContent(type="text", text=msg)],
+                structuredContent={"message": msg, "file_path": file_path, "count": len(records)}
+            )
             
-        return format_series_search_results(df, limit, offset)
+        markdown = format_series_search_results(df, limit, offset)
+        return CallToolResult(
+            content=[TextContent(type="text", text=markdown)],
+            structuredContent=records
+        )
     except Exception as e:
-        return f"Error getting category series: {str(e)}"
+        error_msg = f"Error getting category series: {str(e)}"
+        return CallToolResult(
+            content=[TextContent(type="text", text=error_msg)],
+            isError=True,
+            structuredContent={"error": str(e)}
+        )
 
 @mcp.tool()
-def get_releases(limit: int = 1000, offset: int = 0, file_path: Optional[str] = None) -> str:
+def get_releases(limit: int = 1000, offset: int = 0, file_path: Optional[str] = None) -> CallToolResult:
     """
     Get all releases of economic data.
     
@@ -218,15 +302,30 @@ def get_releases(limit: int = 1000, offset: int = 0, file_path: Optional[str] = 
         fred = get_fred()
         df = fred.get_releases(limit=limit, offset=offset)
         
+        records = df_to_records(df)
+
         if file_path:
-            return save_to_file(df, file_path, "releases")
+            msg = save_to_file(df, file_path, "releases")
+            return CallToolResult(
+                content=[TextContent(type="text", text=msg)],
+                structuredContent={"message": msg, "file_path": file_path, "count": len(records)}
+            )
             
-        return format_series_search_results(df, limit, offset)
+        markdown = format_series_search_results(df, limit, offset)
+        return CallToolResult(
+            content=[TextContent(type="text", text=markdown)],
+            structuredContent=records
+        )
     except Exception as e:
-        return f"Error getting releases: {str(e)}"
+        error_msg = f"Error getting releases: {str(e)}"
+        return CallToolResult(
+            content=[TextContent(type="text", text=error_msg)],
+            isError=True,
+            structuredContent={"error": str(e)}
+        )
 
 @mcp.tool()
-def get_release_series(release_id: int, limit: int = 1000, offset: int = 0, file_path: Optional[str] = None) -> str:
+def get_release_series(release_id: int, limit: int = 1000, offset: int = 0, file_path: Optional[str] = None) -> CallToolResult:
     """
     Get series in a specific release.
     
@@ -240,16 +339,31 @@ def get_release_series(release_id: int, limit: int = 1000, offset: int = 0, file
         fred = get_fred()
         df = fred.get_release_series(release_id, limit=limit, offset=offset)
         
+        records = df_to_records(df)
+
         if file_path:
-            return save_to_file(df, file_path, f"release_{release_id}")
+            msg = save_to_file(df, file_path, f"release_{release_id}")
+            return CallToolResult(
+                content=[TextContent(type="text", text=msg)],
+                structuredContent={"message": msg, "file_path": file_path, "count": len(records)}
+            )
             
-        return format_series_search_results(df, limit, offset)
+        markdown = format_series_search_results(df, limit, offset)
+        return CallToolResult(
+            content=[TextContent(type="text", text=markdown)],
+            structuredContent=records
+        )
     except Exception as e:
-        return f"Error getting release series: {str(e)}"
+        error_msg = f"Error getting release series: {str(e)}"
+        return CallToolResult(
+            content=[TextContent(type="text", text=error_msg)],
+            isError=True,
+            structuredContent={"error": str(e)}
+        )
 
 # Sources and Tags
 @mcp.tool()
-def get_sources(file_path: Optional[str] = None) -> str:
+def get_sources(file_path: Optional[str] = None) -> CallToolResult:
     """
     Get all sources of economic data.
     
@@ -260,17 +374,31 @@ def get_sources(file_path: Optional[str] = None) -> str:
         fred = get_fred()
         df = fred.get_sources()
         
+        records = df_to_records(df)
+
         if file_path:
-            return save_to_file(df, file_path, "sources")
+            msg = save_to_file(df, file_path, "sources")
+            return CallToolResult(
+                content=[TextContent(type="text", text=msg)],
+                structuredContent={"message": msg, "file_path": file_path, "count": len(records)}
+            )
             
         markdown = f"**Found {len(df)} sources:**\n\n"
         markdown += df.to_markdown(index=False)
-        return markdown
+        return CallToolResult(
+            content=[TextContent(type="text", text=markdown)],
+            structuredContent=records
+        )
     except Exception as e:
-        return f"Error getting sources: {str(e)}"
+        error_msg = f"Error getting sources: {str(e)}"
+        return CallToolResult(
+            content=[TextContent(type="text", text=error_msg)],
+            isError=True,
+            structuredContent={"error": str(e)}
+        )
 
 @mcp.tool()
-def get_source(source_id: int) -> str:
+def get_source(source_id: int) -> CallToolResult:
     """Get details for a specific source."""
     try:
         fred = get_fred()
@@ -278,13 +406,21 @@ def get_source(source_id: int) -> str:
         if isinstance(info, list) and len(info) > 0:
             info = info[0] # usage pattern might vary
         # `get_source` in fredapi might return dict or list
-        return f"## Source {source_id}\n\n{info}" 
+        msg = f"## Source {source_id}\n\n{info}"
+        return CallToolResult(
+            content=[TextContent(type="text", text=msg)],
+            structuredContent=info if isinstance(info, dict) else {"details": str(info)}
+        )
     except Exception as e:
-        return f"Error getting source: {str(e)}"
+        return CallToolResult(
+            content=[TextContent(type="text", text=f"Error getting source: {str(e)}")],
+            isError=True,
+            structuredContent={"error": str(e)}
+        )
 
 # Tags
 @mcp.tool()
-def search_related_tags(tag_names: str, limit: int = 1000, offset: int = 0) -> str:
+def search_related_tags(tag_names: str, limit: int = 1000, offset: int = 0) -> CallToolResult:
     """
     Get related tags for a set of tags.
     
@@ -294,13 +430,17 @@ def search_related_tags(tag_names: str, limit: int = 1000, offset: int = 0) -> s
         offset: Offset.
     """
     try:
-        fred = get_fred()
-        # fredapi might support get_series_by_tags
-        # but let's see if we can search tags.
-        # We will try to rely on search for now if specific tag methods are missing.
-        return "Tool `search_related_tags` is not fully implemented in this version."
+        msg = "Tool `search_related_tags` is not fully implemented in this version."
+        return CallToolResult(
+            content=[TextContent(type="text", text=msg)],
+            structuredContent={"message": msg, "tag_names": tag_names, "status": "not_implemented"}
+        )
     except Exception as e:
-        return f"Error: {str(e)}"
+        return CallToolResult(
+            content=[TextContent(type="text", text=f"Error: {str(e)}")],
+            isError=True,
+            structuredContent={"error": str(e)}
+        )
 
 def main():
     mcp.run()
